@@ -1,11 +1,11 @@
-# api/index.py
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 import numpy as np
+import json
 
 app = FastAPI()
 
+# Enable CORS for all origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,33 +13,31 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/")
-async def telemetry_handler(request: Request):
-    payload = await request.json()
-    regions = payload.get("regions", [])
-    threshold_ms = payload.get("threshold_ms", 180)
-    
-    # Assume telemetry.json is bundled with deployment
-    import os, json
-    telemetry_path = os.path.join(os.path.dirname(__file__), "telemetry.json")
-    with open(telemetry_path, "r") as f:
-        data = json.load(f)
-    
-    region_metrics = {}
+# Load telemetry data (store q-vercel-latency.json next to your main.py)
+with open("q-vercel-latency.json") as f:
+    data = json.load(f)
+
+@app.post("/api/latency")
+async def get_latency_metrics(req: Request):
+    body = await req.json()
+    regions = set(body["regions"])
+    threshold = body["threshold_ms"]
+
+    # filter only requested regions
+    filtered = [r for r in data if r["region"] in regions]
+
+    # Get metrics for each requested region
+    result = {}
     for region in regions:
-        region_records = [rec for rec in data if rec["region"] == region]
-        if not region_records:
-            continue
-        
-        latencies = [rec["latency_ms"] for rec in region_records]
-        uptimes = [rec.get("uptime", 1.0) for rec in region_records]
-        breaches = sum(l > threshold_ms for l in latencies)
-        
-        region_metrics[region] = {
-            "avg_latency": float(np.mean(latencies)),
-            "p95_latency": float(np.percentile(latencies, 95)),
-            "avg_uptime": float(np.mean(uptimes)),
-            "breaches": int(breaches),
+        region_data = [r for r in filtered if r["region"] == region]
+        latency = [r["latency_ms"] for r in region_data]
+        uptime = [r["uptime_pct"] for r in region_data]
+        breaches = sum(l > threshold for l in latency)
+
+        result[region] = {
+            "avg_latency": float(np.mean(latency)),
+            "p95_latency": float(np.percentile(latency, 95)),
+            "avg_uptime": float(np.mean(uptime)),
+            "breaches": breaches,
         }
-    
-    return JSONResponse(region_metrics)
+    return result
